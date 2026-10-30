@@ -12,6 +12,109 @@ Build Core first, then add Differentiators in the order listed.
 
 ---
 
+## Step-by-step roadmap (start here)
+
+**The end goal:** one command processes 100+ leads with zero crashes and produces a report the sales team can act on. Every decision is explained, failures are handled, and the README lets a stranger run it.
+
+Do the steps in order. Don't start a step until the previous step's **Done when** check passes. The section numbers (§) point to the details further down this file.
+
+### Phase A: Frame the problem (0:00–0:30) *No logic code yet*
+
+**Step 1: Set up the project** (10 min)
+- Create the folders from §5, a virtual environment, and `requirements.txt` (`pyyaml`, `requests` or the provider SDK, `pytest`).
+- Add `.gitignore` (`.env`, `.cache/`, `logs/`), `.env.example`, and get your free API key from Groq or Gemini.
+- ✅ **Done when:** `python main.py --help` prints usage, and `pytest` runs (0 tests is fine).
+
+**Step 2: Write down the business framing** (10 min) → §1, §2
+- Create `DECISIONS.md`: the client, the ICP, the capacity math (200 hrs/month → a 20–30% qualification target), and the 10 data findings.
+- ✅ **Done when:** you can explain who a good lead is, and why, in 3 sentences.
+
+**Step 3: Label 15 leads by hand, blind** (5 min) → §7.1
+- Before you write any rubric, label 15 leads from `leads_training.csv` as qualified, review, or rejected, using only your gut. Save them in `eval/golden_labels.csv`.
+- ✅ **Done when:** the file exists. Don't change it later; it's your benchmark.
+
+**Step 4: Write the rubric as config** (5 min) → §3, §12
+- Create `config/rubric.yaml`: weights, size bands, source scores, a first-draft industry tier map, thresholds, the knockout rules, and `reference_date`.
+- Tick off the decisions in §12.
+- ✅ **Done when:** every rule in §3 has a value in the YAML, and nothing is hard-coded.
+
+### Phase B: Build the pipeline with no LLM (0:30–1:50)
+
+**Step 5: Ingest and validate** (25 min) → §6.1, §6.2
+- Build `models.py` and `ingest.py`: normalize `NA`, blank, and `Unknown*` to `None`; parse sizes and dates; sanitize `Test_` names; create a stable `lead_id`; record `data_issues` per lead.
+- Add `dedupe.py` (company + size key, fuzzy name match).
+- ✅ **Done when:** loading `leads_testing.csv` prints 20 leads with their issues and no exception, and merging the training and 100-lead files flags "Aaron Benj" as a duplicate.
+
+**Step 6: Rules engine plus tests** (20 min) → §3
+- Build `rules.py` as pure functions, one per factor, each returning `(points, reason_code)`, plus a function that applies the knockouts.
+- Write 6–8 pytest tests: a lead in each size band, each kind of missing value, and each knockout.
+- ✅ **Done when:** `pytest` passes, and every score comes with a factor-by-factor breakdown.
+
+**Step 7: Decision engine and ranking** (15 min) → §3 decision logic, §6.6
+- Build `decide.py`: apply the rules in their fixed order (insufficient data → knockouts → re-engage → thresholds → forced review), then compute `priority_rank` and P1/P2/P3.
+- ✅ **Done when:** each lead has exactly one decision and a list of the rules that produced it.
+
+**Step 8: Mock LLM and a minimal report** (10 min) → §5 CLI
+- Add a `--mock` flag that returns canned enrichment, and write a basic `outputs/output_report.json`.
+- ✅ **Done when:** all 3 files run end-to-end with `--mock` and zero crashes. **🚩 Checkpoint 1:30.**
+
+**Step 9: Calibrate** (20 min) → §3 calibration
+- Print the sensitivity table for the 100-lead file. Adjust the **weights**, not just the thresholds, until about 20–30% of leads qualify and about 15% go to review. Record each version in DECISIONS.md.
+- ✅ **Done when:** the final calibration table and your reasoning are written down.
+
+### Phase C: Add the LLM safely (1:50–3:40)
+
+**Step 10: A reliable LLM client** (30 min) → §6.3
+- Build `llm_client.py` with one function, `complete_json()`. It needs retries with backoff and jitter, `Retry-After` handling, an RPM limiter, a content-hash cache, a circuit breaker, and `temperature=0`.
+- ✅ **Done when:** a real call returns JSON, a repeat call hits the cache, and **an invalid key gives a degraded run (exit code 2) with the report still complete.**
+
+**Step 11: Industry tiers ("the LLM proposes, a human approves, config freezes")** (20 min) → §4
+- Send all unique industry labels in one call and write the result to `config/industry_tiers.generated.yaml`. Review it, fix anything you disagree with, and copy it into `rubric.yaml`.
+- ✅ **Done when:** all 46+ labels have a tier and scoring is deterministic again. **🚩 Checkpoint 2:40.**
+
+**Step 12: Batch enrichment, prompt v1** (30 min) → §6.4
+- Build `prompts.py` (versioned) and `enrich.py`: batches of 15, qualified and review leads only. The code picks the message variant (A/B/C/D) and the LLM writes the copy.
+- Validate each response (JSON, ID set, types), retry once on malformed JSON, then split the batch, then fall back to rules-only.
+- Test with `--limit 10`.
+- ✅ **Done when:** 10 leads come back with reasoning that cites only the provided fields, and a forced bad response falls back cleanly.
+
+**Step 13: Guardrails and prompt iteration** (30 min) → §6.5
+- Build `guardrails.py`: the message must mention the company (and first name when valid), be ≤90 words, and contain no placeholders, `Test_`, banned phrases, or numbers that aren't in the input. On failure, regenerate once, then use the template.
+- Improve the prompt to v2 or v3 and log each change and its result in `PROMPTS.md`.
+- ✅ **Done when:** 10 sample messages are specific, cover different variants, and pass every guardrail. **🚩 Checkpoint 3:40.**
+
+### Phase D: Outputs the sales team will use (3:40–4:15)
+
+**Step 14: All the reports** (20 min) → §8
+- Write `priority_queue.csv`, `review_queue.csv` (with "what to check"), `summary.md`, the run manifest, and the stats.
+- ✅ **Done when:** every file in the §8 table is produced.
+
+**Step 15: The full production run** (15 min)
+- Run `python main.py --input data/leads_full_scale_100.csv`.
+- ✅ **Done when:** 100 leads are processed with zero crashes, exit code 0, and the outputs are committed.
+
+### Phase E: Prove it works (4:15–4:40)
+
+**Step 16: The eval script** (15 min) → §7
+- Run `eval/run_eval.py`: agreement with your golden labels, a two-run consistency check, the label-leak test, and the sensitivity table.
+- ✅ **Done when:** you have numbers for each check, and an explanation for each disagreement with your golden labels.
+
+**Step 17: Break it on purpose** (10 min) → §7.4
+- Try an invalid key, an empty CSV, a missing column, 300 rows, and the testing file.
+- ✅ **Done when:** every case gives the expected exit code and a clear message. Anything you don't fix goes on the limitations list.
+
+### Phase F: Hand it over (4:40–5:00)
+
+**Step 18: README, the final DECISIONS.md, and the zip** (20 min) → §10
+- README (1 page): how to run it, the rubric in 2–3 sentences, the eval results, and known limitations.
+- DECISIONS.md: assumptions, data findings, calibration, and what broke and how you changed course.
+- Zip the project **without** `.env`, `.cache/`, or `logs/`.
+- ✅ **Done when:** a fresh clone, plus `pip install -r requirements.txt` and one command, reproduces the report.
+
+> **If you're behind schedule:** the cut rules in §9 apply at each 🚩 checkpoint. Never cut steps 10, 13 (the fallback part), 14, or 18.
+
+---
+
 ## 0. What "enterprise-grade" means in 5 hours
 
 In a 5-hour build, enterprise-grade does **not** mean Kafka, a database, a web UI, or Kubernetes. The brief says "keep it simple", and over-building is itself a judgment failure.
