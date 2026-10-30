@@ -16,102 +16,299 @@ Build Core first, then add Differentiators in the order listed.
 
 **The end goal:** one command processes 100+ leads with zero crashes and produces a report the sales team can act on. Every decision is explained, failures are handled, and the README lets a stranger run it.
 
-Do the steps in order. Don't start a step until the previous step's **Done when** check passes. The section numbers (§) point to the details further down this file.
+**How to use this:** do the steps in order. Every step has three parts:
+- **Output:** the files the step must produce.
+- **Verify:** the command(s) to run.
+- **Pass if:** objective criteria. All of them must hold before you move to the next step.
+
+If a criterion fails, fix it now. Problems found later cost about 3× as much time. The section numbers (§) point to the details further down this file.
+
+> The expected numbers below assume the draft rubric in §3 and `reference_date = 2024-01-20`. If you change the rubric, recalculate them by hand and update the criteria. Keeping the criteria in sync with the rubric is part of the job.
+
+---
 
 ### Phase A: Frame the problem (0:00–0:30) *No logic code yet*
 
-**Step 1: Set up the project** (10 min)
-- Create the folders from §5, a virtual environment, and `requirements.txt` (`pyyaml`, `requests` or the provider SDK, `pytest`).
-- Add `.gitignore` (`.env`, `.cache/`, `logs/`), `.env.example`, and get your free API key from Groq or Gemini.
-- ✅ **Done when:** `python main.py --help` prints usage, and `pytest` runs (0 tests is fine).
+#### Step 1: Set up the project (10 min)
+**Output:** the folders from §5, `requirements.txt`, `.gitignore`, `.env.example`, a `main.py` stub, and `tests/test_smoke.py` (one test, `assert True`).
 
-**Step 2: Write down the business framing** (10 min) → §1, §2
-- Create `DECISIONS.md`: the client, the ICP, the capacity math (200 hrs/month → a 20–30% qualification target), and the 10 data findings.
-- ✅ **Done when:** you can explain who a good lead is, and why, in 3 sentences.
+**Verify:**
+```
+python main.py --help
+pytest -q
+git check-ignore .env .cache logs
+```
+**Pass if:**
+- [ ] `--help` lists `--input`, `--mock`, `--limit`, `--reference-date`, `--no-cache`, `--out`.
+- [ ] `pytest` exits with code 0 and 1 test passes.
+- [ ] `git check-ignore` prints all three paths, so secrets and caches can't be committed.
+- [ ] `.env.example` contains the variable *name* only, with no value.
 
-**Step 3: Label 15 leads by hand, blind** (5 min) → §7.1
-- Before you write any rubric, label 15 leads from `leads_training.csv` as qualified, review, or rejected, using only your gut. Save them in `eval/golden_labels.csv`.
-- ✅ **Done when:** the file exists. Don't change it later; it's your benchmark.
+#### Step 2: Write down the business framing (10 min) → §1, §2
+**Output:** `DECISIONS.md` with these sections: *Client & ICP*, *Capacity math*, *Data findings*, *Assumptions*.
 
-**Step 4: Write the rubric as config** (5 min) → §3, §12
-- Create `config/rubric.yaml`: weights, size bands, source scores, a first-draft industry tier map, thresholds, the knockout rules, and `reference_date`.
-- Tick off the decisions in §12.
-- ✅ **Done when:** every rule in §3 has a value in the YAML, and nothing is hard-coded.
+**Verify:** `grep -c "^## " DECISIONS.md`, and have someone (or me) read the ICP section.
+
+**Pass if:**
+- [ ] It has at least 4 sections.
+- [ ] *Capacity math* states real numbers: 1,200 leads/month, about 200 hours of triage, the current 5%, and **your target qualification %**.
+- [ ] *Data findings* lists at least 10 findings. *Assumptions* lists at least 5, including `reference_date`, what "Sales call" means, and how `NA` is handled.
+- [ ] **Readback test:** a reader given only your ICP section classifies Alice Chen, Bob Rodriguez, and Rachel Kim the same way you would.
+
+#### Step 3: Label 15 leads by hand, blind (5 min) → §7.1
+**Output:** `eval/golden_labels.csv` with columns `name,company,label,why`.
+
+**Verify:**
+```
+python -c "import csv,collections;r=list(csv.DictReader(open('eval/golden_labels.csv')));print(len(r),collections.Counter(x['label'] for x in r))"
+git log --format=%h -- eval/golden_labels.csv
+```
+**Pass if:**
+- [ ] There are exactly 15 rows, and each label is one of `qualified`, `review`, `rejected`.
+- [ ] Each label is used **at least 3 times**, so the set isn't all easy wins.
+- [ ] Every row has a non-empty `why`.
+- [ ] The file is **committed before `src/rules.py` exists**. The git log proves the labels were blind.
+
+#### Step 4: Write the rubric as config (5 min) → §3, §12
+**Output:** `config/rubric.yaml` with a `version` field, plus the decisions in §12 ticked off in DECISIONS.md.
+
+**Verify:**
+```
+python -c "import yaml;c=yaml.safe_load(open('config/rubric.yaml'));print(c['version'],sum(f['max'] for f in c['factors'].values()),c['thresholds'])"
+```
+**Pass if:**
+- [ ] The YAML loads without errors, and the factor maximums add up to **exactly 10**.
+- [ ] `thresholds.qualified > thresholds.review`.
+- [ ] All 6 source values from the data have a score, and there's a `default` for unknown sources.
+- [ ] Every factor has a `missing_value` score, and the knockouts and re-engage cutoff are defined.
+- [ ] Each §12 item in DECISIONS.md has a one-line reason.
+
+---
 
 ### Phase B: Build the pipeline with no LLM (0:30–1:50)
 
-**Step 5: Ingest and validate** (25 min) → §6.1, §6.2
-- Build `models.py` and `ingest.py`: normalize `NA`, blank, and `Unknown*` to `None`; parse sizes and dates; sanitize `Test_` names; create a stable `lead_id`; record `data_issues` per lead.
-- Add `dedupe.py` (company + size key, fuzzy name match).
-- ✅ **Done when:** loading `leads_testing.csv` prints 20 leads with their issues and no exception, and merging the training and 100-lead files flags "Aaron Benj" as a duplicate.
+#### Step 5: Ingest and validate (25 min) → §6.1, §6.2
+**Output:** `src/models.py`, `src/ingest.py`, `src/dedupe.py`, `tests/test_ingest.py`.
 
-**Step 6: Rules engine plus tests** (20 min) → §3
-- Build `rules.py` as pure functions, one per factor, each returning `(points, reason_code)`, plus a function that applies the knockouts.
-- Write 6–8 pytest tests: a lead in each size band, each kind of missing value, and each knockout.
-- ✅ **Done when:** `pytest` passes, and every score comes with a factor-by-factor breakdown.
+**Verify:**
+```
+python -m src.ingest data/leads_testing.csv      # prints one line per lead + its data_issues
+pytest -q tests/test_ingest.py
+```
+**Pass if:**
+- [ ] All 20 testing leads load and no exception is raised.
+- [ ] `Test_NameOnly` reports **4** missing-field issues (size, industry, source, date).
+- [ ] The string `"NA"` never appears as a field value. Every missing value is `None`.
+- [ ] `Test_MissingName` → `company is None`, and the name is preserved.
+- [ ] All `Test_*` names → `display_name is None`.
+- [ ] Loading the same file twice gives **identical `lead_id`s**.
+- [ ] Training + 100-lead files merged → **28 exact duplicates + 1 near-duplicate** (Aaron Benj / Aaron Benjamin), leaving 100 unique leads.
+- [ ] A CSV missing the `industry` column → exit code 1, with a message that names the column.
 
-**Step 7: Decision engine and ranking** (15 min) → §3 decision logic, §6.6
-- Build `decide.py`: apply the rules in their fixed order (insufficient data → knockouts → re-engage → thresholds → forced review), then compute `priority_rank` and P1/P2/P3.
-- ✅ **Done when:** each lead has exactly one decision and a list of the rules that produced it.
+#### Step 6: Rules engine plus tests (20 min) → §3
+**Output:** `src/rules.py` and `tests/test_rules.py` (at least 8 tests).
 
-**Step 8: Mock LLM and a minimal report** (10 min) → §5 CLI
-- Add a `--mock` flag that returns canned enrichment, and write a basic `outputs/output_report.json`.
-- ✅ **Done when:** all 3 files run end-to-end with `--mock` and zero crashes. **🚩 Checkpoint 1:30.**
+**Verify:**
+```
+pytest -q tests/test_rules.py
+grep -nE "[^a-z_](0\.5|1\.25|2\.5|7\.0|1000)[^0-9]" src/rules.py
+```
+**Pass if:**
+- [ ] All tests pass. They must cover each size band, each kind of missing value, each knockout, and these **3 hand-calculated leads**:
+  - Alice Chen (50 / SaaS / demo / 5 days) → **10.0**
+  - Bob Rodriguez (8 / SaaS / LinkedIn / 0 days) → 0 + 2.5 + 0.5 + 2.0 = **5.0**
+  - Grace Lee (450 / Manufacturing / webinar / 107 days) → 3 + 1.25 + 1.25 + 0 = **5.5**
+- [ ] For every lead, the factor points add up exactly to `base_score`, and `0 ≤ base_score ≤ 10`.
+- [ ] Every factor returns a `reason_code` (for example `SIZE_IN_ICP` or `SOURCE_MISSING`).
+- [ ] The `grep` returns **nothing**: no weights or thresholds are hard-coded in the rules.
 
-**Step 9: Calibrate** (20 min) → §3 calibration
-- Print the sensitivity table for the 100-lead file. Adjust the **weights**, not just the thresholds, until about 20–30% of leads qualify and about 15% go to review. Record each version in DECISIONS.md.
-- ✅ **Done when:** the final calibration table and your reasoning are written down.
+#### Step 7: Decision engine and ranking (15 min) → §3 decision logic, §6.6
+**Output:** `src/decide.py` and `tests/test_decide.py`, which encodes the edge-case contract from DECISIONS.md.
+
+**Verify:** `pytest -q tests/test_decide.py`
+
+**Pass if:**
+- [ ] Every lead has **exactly one** decision from {`qualified`, `review`, `rejected`, `re-engage`}, and at least one `decision_reason`.
+- [ ] Every `review` lead has a non-empty `what_to_check`.
+- [ ] `priority_rank` is set **only** on qualified leads, and runs 1..N with no gaps or duplicates.
+- [ ] Edge-case contract checks:
+  - `Test_NameOnly` → review / insufficient data.
+  - `Test_Solo` (1 employee) → rejected / knockout.
+  - `Test_MissingSize` → review.
+  - `Test_StaleInteraction` → whatever your contract says (re-engage or rejected).
+- [ ] When the input is shuffled, the decisions stay the same, so order doesn't matter.
+
+#### Step 8: Mock LLM and a minimal report (10 min) → §5 CLI
+**Output:** a `--mock` path in `enrich.py`, and `outputs/output_report.json`.
+
+**Verify:** run all 3 files with the API key **unset**:
+```
+env -u GROQ_API_KEY python main.py --input data/leads_training.csv --mock; echo $?
+```
+(Repeat for the 100-lead and testing files.)
+
+**Pass if:**
+- [ ] The exit code is `0` for all 3 files, and no stack trace is printed.
+- [ ] The report is valid JSON, and `len(leads)` equals the number of input rows: **29 / 100 / 20**.
+- [ ] `summary` counts add up to the total, and the percentages add up to 100 (±0.1).
+- [ ] It works with no API key, which proves the pipeline doesn't depend on the LLM. **🚩 Checkpoint 1:30.**
+
+#### Step 9: Calibrate (20 min) → §3 calibration
+**Output:** a sensitivity table and the rubric version history in DECISIONS.md, with `rubric.yaml` bumped to its final version.
+
+**Verify:** run `python eval/run_eval.py --sensitivity --golden` against the 100-lead file and the golden labels.
+
+**Pass if:**
+- [ ] Qualified is between **20 and 30** of the 100 leads.
+- [ ] Review is **≤ 20**.
+- [ ] Agreement with your golden labels is **≥ 70%**, and **every** disagreement has a written explanation (either "rubric was right because…" or "changed weight X because…").
+- [ ] At least 2 rubric versions are recorded, each with what changed and the resulting counts.
+
+---
 
 ### Phase C: Add the LLM safely (1:50–3:40)
 
-**Step 10: A reliable LLM client** (30 min) → §6.3
-- Build `llm_client.py` with one function, `complete_json()`. It needs retries with backoff and jitter, `Retry-After` handling, an RPM limiter, a content-hash cache, a circuit breaker, and `temperature=0`.
-- ✅ **Done when:** a real call returns JSON, a repeat call hits the cache, and **an invalid key gives a degraded run (exit code 2) with the report still complete.**
+#### Step 10: A reliable LLM client (30 min) → §6.3
+**Output:** `src/llm_client.py` and `tests/test_llm_client.py`, which uses a fake transport, so it never touches the network.
 
-**Step 11: Industry tiers ("the LLM proposes, a human approves, config freezes")** (20 min) → §4
-- Send all unique industry labels in one call and write the result to `config/industry_tiers.generated.yaml`. Review it, fix anything you disagree with, and copy it into `rubric.yaml`.
-- ✅ **Done when:** all 46+ labels have a tier and scoring is deterministic again. **🚩 Checkpoint 2:40.**
+**Verify:**
+```
+pytest -q tests/test_llm_client.py
+GROQ_API_KEY=bad python main.py --input data/leads_training.csv; echo $?
+```
+**Pass if:**
+- [ ] **Retry test:** a fake response sequence of 429, 429, 200 → exactly 3 attempts, increasing sleep times (mock `time.sleep`), and success.
+- [ ] **Retry-After test:** a 429 with `Retry-After: 5` → the client sleeps at least 5 seconds (mocked).
+- [ ] **Circuit-breaker test:** after 3 consecutive batch failures, there is **no 4th call**.
+- [ ] **Cache test:** making the same call twice → the second call has `cache_hit=true` and 0 network calls.
+- [ ] **Bad-key run:** exit code **2**, a `DEGRADED RUN` banner, all 29 leads in the report with `llm_status="fallback"`, and still no stack trace.
+- [ ] A real call with your key returns a parsed `dict`.
 
-**Step 12: Batch enrichment, prompt v1** (30 min) → §6.4
-- Build `prompts.py` (versioned) and `enrich.py`: batches of 15, qualified and review leads only. The code picks the message variant (A/B/C/D) and the LLM writes the copy.
-- Validate each response (JSON, ID set, types), retry once on malformed JSON, then split the batch, then fall back to rules-only.
-- Test with `--limit 10`.
-- ✅ **Done when:** 10 leads come back with reasoning that cites only the provided fields, and a forced bad response falls back cleanly.
+#### Step 11: Industry tiers ("the LLM proposes, a human approves, config freezes") (20 min) → §4
+**Output:** `config/industry_tiers.generated.yaml`, the reviewed tiers merged into `rubric.yaml`, and a note in DECISIONS.md.
 
-**Step 13: Guardrails and prompt iteration** (30 min) → §6.5
-- Build `guardrails.py`: the message must mention the company (and first name when valid), be ≤90 words, and contain no placeholders, `Test_`, banned phrases, or numbers that aren't in the input. On failure, regenerate once, then use the template.
-- Improve the prompt to v2 or v3 and log each change and its result in `PROMPTS.md`.
-- ✅ **Done when:** 10 sample messages are specific, cover different variants, and pass every guardrail. **🚩 Checkpoint 3:40.**
+**Verify:** run a small script that lists every unique industry label across all 3 files and the tier each one maps to.
+
+**Pass if:**
+- [ ] **0 unmapped labels** across all 3 files. Missing and unknown values go to the defined `unknown` handling.
+- [ ] DECISIONS.md records how many LLM tier suggestions you **overrode**, and why. Zero overrides is suspicious.
+- [ ] On a second run, the log shows **0 tier LLM calls**, because the known labels are now frozen in config.
+
+#### Step 12: Batch enrichment, prompt v1 (30 min) → §6.4
+**Output:** `src/prompts.py` (with `PROMPT_VERSION`) and `src/enrich.py`.
+
+**Verify:**
+```
+python main.py --input data/leads_training.csv --limit 10
+python main.py --input data/leads_training.csv --limit 10 --inject-bad-json
+```
+**Pass if:**
+- [ ] `llm_calls` in the manifest equals **⌈enriched leads ÷ 15⌉**. For example, 10 leads → **1 call**, never 10.
+- [ ] The set of IDs returned equals the set sent, for every batch.
+- [ ] Every enriched lead has `reasoning`, `sanity_score` (1–10), `message_variant`, and `message`.
+- [ ] Rejected leads have `llm_status="skipped"` and reasoning generated from their factor codes.
+- [ ] **Fault injection:** the log shows retry → split → success or fallback, and all 10 leads are still in the report.
+- [ ] **Grounding spot-check:** every fact in the 10 reasonings can be traced back to an input field.
+
+#### Step 13: Guardrails and prompt iteration (30 min) → §6.5
+**Output:** `src/guardrails.py`, `tests/test_guardrails.py`, and `PROMPTS.md`.
+
+**Verify:** run `pytest -q tests/test_guardrails.py`, then rerun with `--limit 10` and read every message.
+
+**Pass if:**
+- [ ] Each guardrail rule has a failing-example test, and all the tests pass.
+- [ ] **100%** of messages pass the guardrails, or show `message_source="template"` with the reason logged.
+- [ ] Every message contains the company name, none contain `Test_`, `[`, or `{`, and all are ≤ 90 words.
+- [ ] The samples cover **at least 3 distinct variants** (A/B/C/D).
+- [ ] **Swap test:** if you swap any two messages between leads, both become wrong. That's proof the messages are personalized.
+- [ ] `PROMPTS.md` records at least 2 prompt versions, each with *change → reason → measured result*. **🚩 Checkpoint 3:40.**
+
+---
 
 ### Phase D: Outputs the sales team will use (3:40–4:15)
 
-**Step 14: All the reports** (20 min) → §8
-- Write `priority_queue.csv`, `review_queue.csv` (with "what to check"), `summary.md`, the run manifest, and the stats.
-- ✅ **Done when:** every file in the §8 table is produced.
+#### Step 14: All the reports (20 min) → §8
+**Output:** `priority_queue.csv`, `review_queue.csv`, `summary.md`, the manifest inside the JSON report, and `eval/check_report.py`, a script that asserts everything below.
 
-**Step 15: The full production run** (15 min)
-- Run `python main.py --input data/leads_full_scale_100.csv`.
-- ✅ **Done when:** 100 leads are processed with zero crashes, exit code 0, and the outputs are committed.
+**Verify:** `python eval/check_report.py outputs/`
+
+**Pass if:**
+- [ ] The `priority_queue.csv` row count equals the qualified count, and rows are sorted by `priority_rank`.
+- [ ] The `review_queue.csv` row count equals the review count, and every row has a `what_to_check`.
+- [ ] `summary.md` has **≤ 60 lines** and contains the counts, the percentages, the top 3 rejection reasons, the P1 list, and any degraded-run warning.
+- [ ] The manifest has all of these: `run_id`, `input_sha256`, `rubric_version`, `prompt_version`, `model`, `reference_date`, `duration_s`, `llm_calls`, `retries`, `fallbacks`, `tokens`.
+- [ ] `sample_messages` has 3–5 entries covering at least 3 variants.
+
+#### Step 15: The full production run (15 min)
+**Output:** the committed `outputs/` from the 100-lead run.
+
+**Verify:**
+```
+python main.py --input data/leads_full_scale_100.csv; echo $?
+python eval/check_report.py outputs/
+```
+**Pass if:**
+- [ ] The exit code is **0**, there are **100** leads in the report, and `check_report.py` passes.
+- [ ] `llm_calls` ≤ ⌈enriched ÷ 15⌉ + 1 (for the tier call). That's about 7 or fewer, against 100 if you'd called once per lead.
+- [ ] `fallbacks = 0`, or each one is explained in the README.
+- [ ] The decision counts match your final calibration table from Step 9.
+
+---
 
 ### Phase E: Prove it works (4:15–4:40)
 
-**Step 16: The eval script** (15 min) → §7
-- Run `eval/run_eval.py`: agreement with your golden labels, a two-run consistency check, the label-leak test, and the sensitivity table.
-- ✅ **Done when:** you have numbers for each check, and an explanation for each disagreement with your golden labels.
+#### Step 16: The eval script (15 min) → §7
+**Output:** `eval/eval_results.md`
 
-**Step 17: Break it on purpose** (10 min) → §7.4
-- Try an invalid key, an empty CSV, a missing column, 300 rows, and the testing file.
-- ✅ **Done when:** every case gives the expected exit code and a clear message. Anything you don't fix goes on the limitations list.
+**Verify:** `python eval/run_eval.py --all`
+
+**Pass if:**
+- [ ] It reports golden-label agreement %, with each disagreement explained.
+- [ ] **Consistency:** two runs give **100% identical decisions**. You also report the % of sanity scores that changed under `--no-cache`.
+- [ ] **Label-leak:** after neutralizing the names, **0 decisions change**, or each change is explained.
+- [ ] It has an **ROI line** with real numbers: runtime for 100 leads compared with about 16.7 hours of manual work.
+
+#### Step 17: Break it on purpose (10 min) → §7.4
+**Output:** a robustness table in `eval/eval_results.md`.
+
+**Verify:** run each case below and record the exit code and the message.
+
+| Case | Expected |
+|---|---|
+| Invalid API key | exit 2, complete report, DEGRADED banner |
+| Header-only CSV | exit 0, "0 leads processed" |
+| Empty file or no header | exit 1, clear message |
+| Missing `industry` column | exit 1, message names the column |
+| 100-lead file concatenated ×3 (300 rows) | exit 0, 200 duplicates flagged, 100 scored |
+| `leads_testing.csv` | exit 0, 20 leads, every one with a decision |
+
+**Pass if:**
+- [ ] All 6 results match the table.
+- [ ] `grep -c Traceback logs/*` → **0**.
+- [ ] Anything you didn't fix is listed in the README under Known Limitations.
+
+---
 
 ### Phase F: Hand it over (4:40–5:00)
 
-**Step 18: README, the final DECISIONS.md, and the zip** (20 min) → §10
-- README (1 page): how to run it, the rubric in 2–3 sentences, the eval results, and known limitations.
-- DECISIONS.md: assumptions, data findings, calibration, and what broke and how you changed course.
-- Zip the project **without** `.env`, `.cache/`, or `logs/`.
-- ✅ **Done when:** a fresh clone, plus `pip install -r requirements.txt` and one command, reproduces the report.
+#### Step 18: README, the final DECISIONS.md, and the zip (20 min) → §10
+**Output:** `README.md`, the final `DECISIONS.md`, and `lead-intelligence.zip`.
 
-> **If you're behind schedule:** the cut rules in §9 apply at each 🚩 checkpoint. Never cut steps 10, 13 (the fallback part), 14, or 18.
+**Verify:**
+```
+git clone <repo> /tmp/fresh && cd /tmp/fresh
+pip install -r requirements.txt
+python main.py --input data/leads_full_scale_100.csv --mock
+unzip -l lead-intelligence.zip | grep -E "\.env$|\.cache|logs/"
+```
+**Pass if:**
+- [ ] A fresh clone produces a report **by following only the README**, in under 2 minutes.
+- [ ] The README is **≤ 1 page** (about 500 words) and covers how to run it, the rubric in 2–3 sentences, the eval results, and known limitations.
+- [ ] DECISIONS.md covers the assumptions, the data findings, the calibration, and what broke and how you changed course.
+- [ ] The `unzip | grep` prints **nothing**: no secrets, caches, or logs in the zip.
+- [ ] `git grep -nE "gsk_|AIza|sk-"` → nothing, so no API keys are committed.
+
+> **If you're behind schedule:** the cut rules in §9 apply at each 🚩 checkpoint. Never cut steps 10, 13 (the fallback part), 14, or 18. If you cut something, note it under Known Limitations so the graders see it was a conscious trade-off.
 
 ---
 
